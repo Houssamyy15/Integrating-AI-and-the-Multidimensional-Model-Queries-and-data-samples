@@ -13,6 +13,9 @@ Code:
 			  jsonb_build_object('role', 'user', 'content', 'input_function_prompt' STRING_AGG(input_R_column)))
   			  )->'choices'->0->'message'->>'content' )::text
 ```
+
+
+
   
 ```
 2.	Text Embedding Similarity
@@ -26,6 +29,10 @@ ai.ollama_embed(
 			host => ‘http://pgai-ollama:11434’)::vector
 	<=> input_R_column<0.4
 ```
+
+
+
+
 ``` 
 3.	Image Embedding Similarity
 Name: Image Embedding Similarity
@@ -38,6 +45,9 @@ Code:
 				host => 'http://pgai-ollama:11434' )::vector
 	 <=> input_R_column < 0.4
 ```
+
+
+
 ``` 
 4.	Embedding Similarity
 Name: Embedding Similarity
