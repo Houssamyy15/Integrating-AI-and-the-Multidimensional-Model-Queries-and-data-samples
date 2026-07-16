@@ -376,7 +376,10 @@ GROUP BY
    ![Query Output](q12.png)
 
 ========================================================================================================= 
-												<code style="color : green">****USER QUERIES****</code>
+
+<code style="color : green">****USER QUERIES****</code>
+
+========================================================================================================= 
 
 **Query:Find  the average number of orders for restaurants located close to the sea**
 
@@ -956,6 +959,529 @@ FROM
 
 
 ========================================================================================================= 
-					<code style="color : green">****OPERATIONAL QUERIES****</code>
+
+<code style="color : cyan">OPERATIONAL QUERIES</code>
+
+========================================================================================================= 
+
+**Query:Where can I find the most authentic sushi in Paris?**
 
 
+``` 
+WITH sushi_classification AS (
+    SELECT 
+        dish_id,
+        -- Strict sanitization block applied to the LLM-driven sushi classification
+        CAST(
+            REGEXP_REPLACE(
+                (REGEXP_MATCH(
+                    (ai.openai_chat_complete(
+                        'llama-3.1-8b-instant',
+                        jsonb_build_array(
+                            jsonb_build_object(
+                                'role', 'user', 
+                                'content', 'Analyze the dish name: ''' || dish_name || '''. Is this dish a traditional Japanese sushi, sashimi, or nigiri (excluding generic western fusion rolls unless specified as authentic)? Reply with exactly ''1'' for yes and ''0'' for no. Do not include any other text or punctuation.'
+                            )
+                        )
+                    )->'choices'->0->'message'->>'content')::text,
+                    '[0-9.]+'
+                ))[1], 
+                '[^0-9.]', 
+                '', 
+                'g'
+            ) AS DOUBLE PRECISION
+        ) AS is_sushi
+    FROM 
+        dish
+),
+authentic_japanese_paris_restaurants AS (
+    SELECT 
+        restaurant_id,
+        restaurant_description,
+        -- Calculating semantic distance to "authentic Japanese restaurant" using pre-computed embeddings
+        (ai.ollama_embed(
+            'mxbai-embed-large',
+            'authentic Japanese restaurant',
+            host => 'http://pgai-ollama:11434'
+        )::vector <=> restaurant_description_embedded) AS authenticity_distance
+    FROM 
+        location
+    WHERE 
+        LOWER(city) = 'paris'
+        AND (ai.ollama_embed(
+            'mxbai-embed-large',
+            'authentic Japanese restaurant',
+            host => 'http://pgai-ollama:11434'
+        )::vector <=> restaurant_description_embedded) < 0.4
+)
+SELECT DISTINCT
+    ajpr.restaurant_id,
+    ajpr.restaurant_description,
+    d.dish_name,
+    o.unit_price,
+    ajpr.authenticity_distance
+FROM 
+    order_Line o
+JOIN 
+    sushi_classification sc ON o.dish_id = sc.dish_id
+JOIN 
+    authentic_japanese_paris_restaurants ajpr ON o.restaurant_id = ajpr.restaurant_id
+JOIN 
+    dish d ON d.dish_id = o.dish_id
+WHERE 
+    NULLIF(sc.is_sushi, NULL) = 1
+ORDER BY 
+    ajpr.authenticity_distance ASC;
+```
+
+========================================================================================================= 
+
+**Query: Which is the cheapest dish in Rome?**
+
+
+``` 
+SELECT 
+    d.dish_name,
+    o.unit_price AS price,
+    l.restaurant_description AS restaurant_name
+FROM 
+    order_Line o
+JOIN 
+    location l ON o.restaurant_id = l.restaurant_id
+JOIN 
+    dish d ON o.dish_id = d.dish_id
+WHERE 
+    LOWER(l.city) = 'rome'
+ORDER BY 
+    o.unit_price ASC
+LIMIT 1;
+```
+
+========================================================================================================= 
+
+**Query:Find inexpensive restaurants**
+
+
+``` 
+SELECT 
+    restaurant_id,
+    restaurant_description,
+    city,
+    -- Calculate the cosine distance (smaller distance indicates higher semantic similarity)
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'inexpensive restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) AS price_similarity_distance
+FROM 
+    location
+WHERE 
+    -- Filter out locations that do not semantically align with the cheap/budget concept
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'inexpensive restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) < 0.4
+ORDER BY 
+    price_similarity_distance ASC;
+```
+
+
+========================================================================================================= 
+
+**Query:Give me a list of romantic restaurants in Paris**
+
+
+``` 
+SELECT 
+    restaurant_id,
+    restaurant_description,
+    city,
+    -- Calculate the cosine distance (smaller distance indicates closer romantic semantic match)
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'romantic restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) AS romance_similarity_distance
+FROM 
+    location
+WHERE 
+    LOWER(city) = 'paris'
+    -- Filter for locations that tightly match the romantic concept
+    AND (ai.ollama_embed(
+        'mxbai-embed-large',
+        'romantic restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) < 0.4
+ORDER BY 
+    romance_similarity_distance ASC;
+```
+
+
+
+
+========================================================================================================= 
+
+<code style="color : cyan">UNCONVENTIONAL/FUZZY EXPRESSIONS</code>
+
+========================================================================================================= 
+
+
+**Query:What is the average price of a hamburger in Paris restaurants that are absolute tourist traps?**
+
+
+``` 
+WITH burger_classification AS (
+    SELECT 
+        dish_id,
+        -- Strict sanitization block to parse binary indicator safely
+        CAST(
+            REGEXP_REPLACE(
+                (REGEXP_MATCH(
+                    (ai.openai_chat_complete(
+                        'llama-3.1-8b-instant',
+                        jsonb_build_array(
+                            jsonb_build_object(
+                                'role', 'user', 
+                                'content', 'Analyze the dish name: ''' || dish_name || '''. Is this dish a hamburger, cheeseburger, or similar beef/veggie burger? Reply with exactly ''1'' for yes and ''0'' for no. Do not include any other text or punctuation.'
+                            )
+                        )
+                    )->'choices'->0->'message'->>'content')::text,
+                    '[0-9.]+'
+                ))[1], 
+                '[^0-9.]', 
+                '', 
+                'g'
+            ) AS DOUBLE PRECISION
+        ) AS is_burger
+    FROM 
+        dish
+),
+tourist_trap_paris_restaurants AS (
+    SELECT 
+        restaurant_id,
+        restaurant_description
+    FROM 
+        location
+    WHERE 
+        LOWER(city) = 'paris'
+        -- Vector distance threshold to isolate tourist-trap descriptors (typically < 0.4 distance)
+        AND (ai.ollama_embed(
+            'mxbai-embed-large',
+            'tourist trap restaurant',
+            host => 'http://pgai-ollama:11434'
+        )::vector <=> restaurant_description_embedded) < 0.4
+)
+SELECT 
+    ROUND(AVG(o.unit_price)::numeric, 2) AS average_hamburger_price,
+    COUNT(DISTINCT o.dish_id) AS total_burger_dishes_evaluated,
+    COUNT(DISTINCT ttpr.restaurant_id) AS tourist_trap_restaurants_found
+FROM 
+    order_Line o
+JOIN 
+    burger_classification bc ON o.dish_id = bc.dish_id
+JOIN 
+    tourist_trap_paris_restaurants ttpr ON o.restaurant_id = ttpr.restaurant_id
+WHERE 
+    NULLIF(bc.is_burger, NULL) = 1;
+```
+
+========================================================================================================= 
+
+**Query:Where can I get great food with a busy, energetic vibe without needing a reservation 3 months in advance?**
+
+
+``` 
+SELECT 
+    restaurant_id,
+    restaurant_description,
+    city,
+    -- Measure the semantic distance to a lively, walk-in friendly dining atmosphere
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'lively energetic restaurant no reservation walk in',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) AS vibe_similarity_distance
+FROM 
+    location
+WHERE 
+    --  filter to pull highly energetic, accessible concepts 
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'lively energetic restaurant no reservation walk in',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) < 0.4
+ORDER BY 
+    vibe_similarity_distance ASC;
+```
+
+========================================================================================================= 
+
+**Which restaurant has the absolute worst service?**
+
+
+``` 
+WITH review_scores AS (
+    SELECT 
+        ol.restaurant_id,
+        -- Virtual Level: service_score (1.0 = Worst Service, 5.0 = Excellent Service)
+        CAST(
+            NULLIF(
+                REGEXP_REPLACE(
+                    (REGEXP_MATCH(
+                        (ai.openai_chat_complete(
+                            'llama-3.1-8b-instant',
+                            jsonb_build_array(
+                                jsonb_build_object(
+                                    'role', 'user', 
+                                    'content', 'Based on the customer review, rate the quality of the restaurant''s service on a scale from 1 to 5 (where 1 is extremely bad/worst service, 5 is excellent service, and 3 is neutral). If the review does not mention service, reply with 3. Reply ONLY with the number. Review: ' || ol.review
+                                )
+                            )
+                        )->'choices'->0->'message'->>'content')::text, 
+                        '[0-9.]+'
+                    ))[1], 
+                    '[^0-9.]', 
+                    '', 
+                    'g'
+                ), 
+                ''
+            ) AS DOUBLE PRECISION
+        ) AS service_score
+    FROM 
+        order_Line ol
+    WHERE 
+        ol.review IS NOT NULL 
+        AND ol.review <> ''
+)
+SELECT 
+    l.restaurant_id,
+    l.city,
+    l.country,
+    AVG(rs.service_score) AS average_service_rating
+FROM 
+    review_scores rs
+JOIN 
+    location l ON rs.restaurant_id = l.restaurant_id
+GROUP BY 
+    l.restaurant_id, 
+    l.city, 
+    l.country
+ORDER BY 
+    average_service_rating ASC
+LIMIT 1;
+```
+
+========================================================================================================= 
+
+**Query:Give me a summary of the reviews for cheap restaurants with included service fees that are actually good**
+
+
+``` 
+WITH review_classification AS (
+    SELECT 
+        order_id,
+        review,
+        review_embedded,
+        -- Virtual Level: service_fee_included (Value 1.0 = Yes, Value 0.0 = No)
+        CAST(
+            NULLIF(
+                REGEXP_REPLACE(
+                    (REGEXP_MATCH(
+                        (ai.openai_chat_complete(
+                            'llama-3.1-8b-instant',
+                            jsonb_build_array(
+                                jsonb_build_object(
+                                    'role', 'user', 
+                                    'content', 'Does the review indicate that service fees are included? Reply with 1 for yes, 0 for no. Review: ' || review
+                                )
+                            )
+                        )->'choices'->0->'message'->>'content')::text, 
+                        '[0-9.]+'
+                    ))[1], 
+                    '[^0-9.]', 
+                    '', 
+                    'g'
+                ), 
+                ''
+            ) AS DOUBLE PRECISION
+        ) AS service_fee_included
+    FROM 
+        order_Line
+)
+SELECT 
+    -- AI-based Summarization aggregation of the filtered reviews
+    (ai.openai_chat_complete(
+        'llama-3.1-8b-instant',
+        jsonb_build_array(
+            jsonb_build_object(
+                'role', 'user', 
+                'content', 'give me one line summary: ' || STRING_AGG(review, ' ')
+            )
+        )
+    )->'choices'->0->'message'->>'content')::text AS review_summary
+FROM 
+    review_classification
+WHERE 
+    -- 1. Filter: "With included service fees" (derived virtual level = 1)
+    service_fee_included = 1.0
+    
+    -- 2. Filter: "Cheap" restaurants (semantic match using Text Embedding Similarity)
+    AND ai.ollama_embed(
+        'mxbai-embed-large', 
+        'cheap', 
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> review_embedded < 0.4
+    
+    -- 3. Filter: "Actually good" restaurants (semantic match using Text Embedding Similarity)
+    AND ai.ollama_embed(
+        'mxbai-embed-large', 
+        'good', 
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> review_embedded < 0.4;
+```
+========================================================================================================= 
+
+**Query:Find not-so-expensive dishes **
+
+
+``` 
+WITH dish_prices AS (
+    SELECT 
+        d.dish_id,
+        d.dish_name,
+        ROUND(AVG(ol.unit_price)::numeric, 2) AS average_price
+    FROM 
+        dish d
+    JOIN 
+        order_Line ol ON d.dish_id = ol.dish_id
+    GROUP BY 
+        d.dish_id, 
+        d.dish_name
+),
+dish_classification AS (
+    SELECT 
+        dish_id,
+        dish_name,
+        average_price,
+        -- Virtual Level: is_affordable (Value 1.0 = Yes, Value 0.0 = No)
+        CAST(
+            NULLIF(
+                REGEXP_REPLACE(
+                    (REGEXP_MATCH(
+                        (ai.openai_chat_complete(
+                            'llama-3.1-8b-instant',
+                            jsonb_build_array(
+                                jsonb_build_object(
+                                    'role', 'user', 
+                                    'content', 'Is a dish named ''' || dish_name || ''' with an average price of $' || average_price || ' considered not-so-expensive/affordable? Reply with 1 for yes and 0 for no.'
+                                )
+                            )
+                        )->'choices'->0->'message'->>'content')::text, 
+                        '[0-9.]+'
+                    ))[1], 
+                    '[^0-9.]', 
+                    '', 
+                    'g'
+                ), 
+                ''
+            ) AS DOUBLE PRECISION
+        ) AS is_affordable
+    FROM 
+        dish_prices
+)
+SELECT 
+    dish_id,
+    dish_name,
+    average_price
+FROM 
+    dish_classification
+WHERE 
+    is_affordable = 1.0;
+```
+
+
+========================================================================================================= 
+
+<code style="color : cyan">PREFERENCE QUERIES</code>
+
+========================================================================================================= 
+
+**Query:Find a restaurant that first of all is cheap, and possibly has a terrace **
+
+
+``` 
+SELECT DISTINCT ON (l.restaurant_id)
+    l.restaurant_id,
+    l.city,
+    l.country,
+    l.restaurant_description,
+    -- Preference Score: Lower distance means a higher likelihood of having a terrace
+    (ai.ollama_embed(
+        'nomic-embed-text',
+        'terrace',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> l.restaurant_picture_embedded) AS terrace_distance
+FROM 
+    location l
+JOIN 
+    order_Line ol ON l.restaurant_id = ol.restaurant_id
+WHERE 
+    -- 1. Hard Filter: Must be "cheap" according to review embeddings
+    ai.ollama_embed(
+        'mxbai-embed-large',
+        'cheap',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> ol.review_embedded < 0.4
+ORDER BY 
+    l.restaurant_id,
+    -- 2. Preference Ranking: Put restaurants that match "terrace" first
+    terrace_distance ASC;
+```
+========================================================================================================= 
+
+**Query:Find the dishes that offer the best compromise between being cheap and having good reviews **
+
+
+``` 
+WITH dish_metrics AS (
+    SELECT 
+        d.dish_id,
+        d.dish_name,
+        -- Metric 1: Average unit price (lower is cheaper)
+        AVG(ol.unit_price) AS average_price,
+        
+        -- Metric 2: Average distance to 'good' sentiment (lower is more positive)
+        AVG(
+            ol.review_embedded <=> ai.ollama_embed(
+                'mxbai-embed-large', 
+                'good', 
+                host => 'http://pgai-ollama:11434'
+            )::vector
+        ) AS average_good_distance
+    FROM 
+        dish d
+    JOIN 
+        order_Line ol ON d.dish_id = ol.dish_id
+    WHERE 
+        ol.review_embedded IS NOT NULL
+    GROUP BY 
+        d.dish_id, 
+        d.dish_name
+)
+SELECT 
+    dish_id,
+    dish_name,
+    average_price,
+    average_good_distance,
+    -- Best compromise formula (lower score indicates optimal balance of price and rating)
+    (average_price * average_good_distance) AS compromise_score
+FROM 
+    dish_metrics
+ORDER BY 
+    compromise_score ASC;
+```
+
+
+
+
+========================================================================================================= 
