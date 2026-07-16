@@ -859,7 +859,50 @@ GROUP BY
 
 
 ``` 
-
+WITH categorized_locations AS (
+    SELECT 
+        restaurant_id,
+        CASE 
+            WHEN (ai.ollama_embed(
+                'mxbai-embed-large',
+                'seaside',
+                host => 'http://pgai-ollama:11434'
+            )::vector <=> restaurant_description_embedded) < 0.4 THEN 'seaside'
+            WHEN (ai.ollama_embed(
+                'mxbai-embed-large',
+                'countryside',
+                host => 'http://pgai-ollama:11434'
+            )::vector <=> restaurant_description_embedded) < 0.4 THEN 'countryside'
+            ELSE 'other'
+        END AS location_type
+    FROM 
+        location
+),
+group_quantities AS (
+    SELECT
+        cl.location_type,
+        SUM(o.quantity) AS total_quantity
+    FROM 
+        order_Line o
+    JOIN 
+        categorized_locations cl ON o.restaurant_id = cl.restaurant_id
+    WHERE 
+        cl.location_type IN ('seaside', 'countryside')
+    GROUP BY 
+        cl.location_type
+)
+SELECT 
+    COALESCE(SUM(CASE WHEN location_type = 'seaside' THEN total_quantity END), 0) AS seaside_total_quantity,
+    COALESCE(SUM(CASE WHEN location_type = 'countryside' THEN total_quantity END), 0) AS countryside_total_quantity,
+    CASE 
+        WHEN COALESCE(SUM(CASE WHEN location_type = 'seaside' THEN total_quantity END), 0) > 
+             COALESCE(SUM(CASE WHEN location_type = 'countryside' THEN total_quantity END), 0) THEN 'Seaside has more sales quantity.'
+        WHEN COALESCE(SUM(CASE WHEN location_type = 'seaside' THEN total_quantity END), 0) < 
+             COALESCE(SUM(CASE WHEN location_type = 'countryside' THEN total_quantity END), 0) THEN 'Countryside has more sales quantity.'
+        ELSE 'Both regions have equal sales quantity.'
+    END AS comparison_result
+FROM 
+    group_quantities;
 ```
 
 
