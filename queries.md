@@ -376,8 +376,7 @@ GROUP BY
    ![Query Output](q12.png)
 
 ========================================================================================================= 
-
-
+												<code style="color : green">****USER QUERIES****</code>
 
 **Query:Find  the average number of orders for restaurants located close to the sea**
 
@@ -957,3 +956,6 @@ FROM
 
 
 ========================================================================================================= 
+					<code style="color : green">****OPERATIONAL QUERIES****</code>
+
+
