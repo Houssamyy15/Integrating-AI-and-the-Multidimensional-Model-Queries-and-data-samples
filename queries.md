@@ -636,70 +636,6 @@ FROM
 ========================================================================================================= 
 
 
-
-**Query:What is the average review for restaurants selling hamburgers?**
-
-
-``` 
-WITH hamburger_dishes AS (
-    SELECT 
-        dish_id,
-        -- Strict sanitization block applied to the LLM-driven selection
-        CAST(
-            REGEXP_REPLACE(
-                (REGEXP_MATCH(
-                    (ai.openai_chat_complete(
-                        'llama-3.1-8b-instant',
-                        jsonb_build_array(
-                            jsonb_build_object(
-                                'role', 'user', 
-                                'content', 'Analyze the dish name: ''' || dish_name || '''. Is this dish a hamburger or a variation of a hamburger? Reply with exactly ''1'' for yes and ''0'' for no. Do not include any other text or punctuation.'
-                            )
-                        )
-                    )->'choices'->0->'message'->>'content')::text,
-                    '[0-9.]+'
-                ))[1], 
-                '[^0-9.]', 
-                '', 
-                'g'
-            ) AS DOUBLE PRECISION
-        ) AS is_hamburger
-    FROM 
-        dish
-),
-target_restaurants AS (
-    SELECT DISTINCT
-        o.restaurant_id
-    FROM 
-        order_Line o
-    JOIN 
-        hamburger_dishes hd ON o.dish_id = hd.dish_id
-    WHERE 
-        NULLIF(hd.is_hamburger, NULL) = 1
-)
-SELECT 
-    -- Applying the Summarization-text library function as the aggregation operator
-    (ai.openai_chat_complete(
-        'llama-3.1-8b-instant',
-        jsonb_build_array(
-            jsonb_build_object(
-                'role', 'user', 
-                'content', 'give me one line summary' || STRING_AGG(o.review, ' ')
-            )
-        )
-    )->'choices'->0->'message'->>'content' )::text AS average_review
-FROM 
-    order_Line o
-JOIN 
-    target_restaurants tr ON o.restaurant_id = tr.restaurant_id
-WHERE 
-    o.review IS NOT NULL;
-```
-
-
-========================================================================================================= 
-
-
 **Query:What is the average review for restaurants that do not sell fish?**
 
 
@@ -919,169 +855,7 @@ SELECT
 FROM 
     group_averages;
 ```
-
-
 ========================================================================================================= 
-
-<code style="color : cyan">OPERATIONAL QUERIES</code>
-
-========================================================================================================= 
-
-**Query:Where can I find the most authentic sushi in Paris?**
-
-
-``` 
-WITH sushi_classification AS (
-    SELECT 
-        dish_id,
-        -- Strict sanitization block applied to the LLM-driven sushi classification
-        CAST(
-            REGEXP_REPLACE(
-                (REGEXP_MATCH(
-                    (ai.openai_chat_complete(
-                        'llama-3.1-8b-instant',
-                        jsonb_build_array(
-                            jsonb_build_object(
-                                'role', 'user', 
-                                'content', 'Analyze the dish name: ''' || dish_name || '''. Is this dish a traditional Japanese sushi, sashimi, or nigiri (excluding generic western fusion rolls unless specified as authentic)? Reply with exactly ''1'' for yes and ''0'' for no. Do not include any other text or punctuation.'
-                            )
-                        )
-                    )->'choices'->0->'message'->>'content')::text,
-                    '[0-9.]+'
-                ))[1], 
-                '[^0-9.]', 
-                '', 
-                'g'
-            ) AS DOUBLE PRECISION
-        ) AS is_sushi
-    FROM 
-        dish
-),
-authentic_japanese_paris_restaurants AS (
-    SELECT 
-        restaurant_id,
-        restaurant_description,
-        -- Calculating semantic distance to "authentic Japanese restaurant" using pre-computed embeddings
-        (ai.ollama_embed(
-            'mxbai-embed-large',
-            'authentic Japanese restaurant',
-            host => 'http://pgai-ollama:11434'
-        )::vector <=> restaurant_description_embedded) AS authenticity_distance
-    FROM 
-        location
-    WHERE 
-        LOWER(city) = 'paris'
-        AND (ai.ollama_embed(
-            'mxbai-embed-large',
-            'authentic Japanese restaurant',
-            host => 'http://pgai-ollama:11434'
-        )::vector <=> restaurant_description_embedded) < 0.4
-)
-SELECT DISTINCT
-    ajpr.restaurant_id,
-    ajpr.restaurant_description,
-    d.dish_name,
-    o.unit_price,
-    ajpr.authenticity_distance
-FROM 
-    order_Line o
-JOIN 
-    sushi_classification sc ON o.dish_id = sc.dish_id
-JOIN 
-    authentic_japanese_paris_restaurants ajpr ON o.restaurant_id = ajpr.restaurant_id
-JOIN 
-    dish d ON d.dish_id = o.dish_id
-WHERE 
-    NULLIF(sc.is_sushi, NULL) = 1
-ORDER BY 
-    ajpr.authenticity_distance ASC;
-```
-
-========================================================================================================= 
-
-**Query: Which is the cheapest dish in Rome?**
-
-
-``` 
-SELECT 
-    d.dish_name,
-    o.unit_price AS price,
-    l.restaurant_description AS restaurant_name
-FROM 
-    order_Line o
-JOIN 
-    location l ON o.restaurant_id = l.restaurant_id
-JOIN 
-    dish d ON o.dish_id = d.dish_id
-WHERE 
-    LOWER(l.city) = 'rome'
-ORDER BY 
-    o.unit_price ASC
-LIMIT 1;
-```
-
-========================================================================================================= 
-
-**Query:Find inexpensive restaurants**
-
-
-``` 
-SELECT 
-    restaurant_id,
-    restaurant_description,
-    city,
-    -- Calculate the cosine distance (smaller distance indicates higher semantic similarity)
-    (ai.ollama_embed(
-        'mxbai-embed-large',
-        'inexpensive restaurant',
-        host => 'http://pgai-ollama:11434'
-    )::vector <=> restaurant_description_embedded) AS price_similarity_distance
-FROM 
-    location
-WHERE 
-    -- Filter out locations that do not semantically align with the cheap/budget concept
-    (ai.ollama_embed(
-        'mxbai-embed-large',
-        'inexpensive restaurant',
-        host => 'http://pgai-ollama:11434'
-    )::vector <=> restaurant_description_embedded) < 0.4
-ORDER BY 
-    price_similarity_distance ASC;
-```
-
-
-========================================================================================================= 
-
-**Query:Give me a list of romantic restaurants in Paris**
-
-
-``` 
-SELECT 
-    restaurant_id,
-    restaurant_description,
-    city,
-    -- Calculate the cosine distance (smaller distance indicates closer romantic semantic match)
-    (ai.ollama_embed(
-        'mxbai-embed-large',
-        'romantic restaurant',
-        host => 'http://pgai-ollama:11434'
-    )::vector <=> restaurant_description_embedded) AS romance_similarity_distance
-FROM 
-    location
-WHERE 
-    LOWER(city) = 'paris'
-    -- Filter for locations that tightly match the romantic concept
-    AND (ai.ollama_embed(
-        'mxbai-embed-large',
-        'romantic restaurant',
-        host => 'http://pgai-ollama:11434'
-    )::vector <=> restaurant_description_embedded) < 0.4
-ORDER BY 
-    romance_similarity_distance ASC;
-```
-
-========================================================================================================= 
-
 **Query:For each continent, show me the average price of burgers on a monthly basis**
 
 
@@ -1340,36 +1114,119 @@ ORDER BY
 ```
 ========================================================================================================= 
 
-**Query:**
-
-
-``` 
-
-```
 ========================================================================================================= 
 
-**Query:**
+<code style="color : cyan">OPERATIONAL QUERIES</code>
 
-
-``` 
-
-```
 ========================================================================================================= 
 
-**Query:**
+**Query:Where can I find the most authentic sushi in Paris?**
 
 
 ``` 
-
+WITH sushi_classification AS (
+    SELECT 
+        dish_id,
+        -- Strict sanitization block applied to the LLM-driven sushi classification
+        CAST(
+            REGEXP_REPLACE(
+                (REGEXP_MATCH(
+                    (ai.openai_chat_complete(
+                        'llama-3.1-8b-instant',
+                        jsonb_build_array(
+                            jsonb_build_object(
+                                'role', 'user', 
+                                'content', 'Analyze the dish name: ''' || dish_name || '''. Is this dish a traditional Japanese sushi, sashimi, or nigiri (excluding generic western fusion rolls unless specified as authentic)? Reply with exactly ''1'' for yes and ''0'' for no. Do not include any other text or punctuation.'
+                            )
+                        )
+                    )->'choices'->0->'message'->>'content')::text,
+                    '[0-9.]+'
+                ))[1], 
+                '[^0-9.]', 
+                '', 
+                'g'
+            ) AS DOUBLE PRECISION
+        ) AS is_sushi
+    FROM 
+        dish
+),
+authentic_japanese_paris_restaurants AS (
+    SELECT 
+        restaurant_id,
+        restaurant_description,
+        -- Calculating semantic distance to "authentic Japanese restaurant" using pre-computed embeddings
+        (ai.ollama_embed(
+            'mxbai-embed-large',
+            'authentic Japanese restaurant',
+            host => 'http://pgai-ollama:11434'
+        )::vector <=> restaurant_description_embedded) AS authenticity_distance
+    FROM 
+        location
+    WHERE 
+        LOWER(city) = 'paris'
+        AND (ai.ollama_embed(
+            'mxbai-embed-large',
+            'authentic Japanese restaurant',
+            host => 'http://pgai-ollama:11434'
+        )::vector <=> restaurant_description_embedded) < 0.4
+)
+SELECT DISTINCT
+    ajpr.restaurant_id,
+    ajpr.restaurant_description,
+    d.dish_name,
+    o.unit_price,
+    ajpr.authenticity_distance
+FROM 
+    order_Line o
+JOIN 
+    sushi_classification sc ON o.dish_id = sc.dish_id
+JOIN 
+    authentic_japanese_paris_restaurants ajpr ON o.restaurant_id = ajpr.restaurant_id
+JOIN 
+    dish d ON d.dish_id = o.dish_id
+WHERE 
+    NULLIF(sc.is_sushi, NULL) = 1
+ORDER BY 
+    ajpr.authenticity_distance ASC;
 ```
+
+
+
 ========================================================================================================= 
 
-**Query:**
+**Query:Find inexpensive restaurants**
 
 
 ``` 
-
+SELECT 
+    restaurant_id,
+    restaurant_description,
+    city,
+    -- Calculate the cosine distance (smaller distance indicates higher semantic similarity)
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'inexpensive restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) AS price_similarity_distance
+FROM 
+    location
+WHERE 
+    -- Filter out locations that do not semantically align with the cheap/budget concept
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'inexpensive restaurant',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) < 0.4
+ORDER BY 
+    price_similarity_distance ASC;
 ```
+
+
+
+
+
+
+
 ========================================================================================================= 
 
 <code style="color : cyan">UNCONVENTIONAL/FUZZY EXPRESSIONS</code>
