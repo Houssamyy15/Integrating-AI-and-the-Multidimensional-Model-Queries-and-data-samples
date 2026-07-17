@@ -375,6 +375,12 @@ GROUP BY
 ```
    ![Query Output](q12.png)
 
+
+
+
+
+   
+
 ========================================================================================================= 
 
 <code style="color : green">****USER QUERIES****</code>
@@ -808,6 +814,8 @@ FROM
 
 
 ========================================================================================================= 
+
+
 **Query:Are restaurants in the countryside more expensive than restaurants by the seaside?**
 
 
@@ -856,6 +864,8 @@ FROM
     group_averages;
 ```
 ========================================================================================================= 
+
+
 **Query:For each continent, show me the average price of burgers on a monthly basis**
 
 
@@ -907,6 +917,7 @@ ORDER BY
 
 ========================================================================================================= 
 
+
 **Query:Group orders by customer satisfaction and tell me the average price and number of orders**
 
 
@@ -952,6 +963,7 @@ ORDER BY
 ```
 ========================================================================================================= 
 
+
 **Query:Count, for every city and dish, the percentage of orders where the picture of the dish is close to the standard picture**
 
 
@@ -984,6 +996,7 @@ ORDER BY
     percentage_close_to_standard DESC;
 ```
 ========================================================================================================= 
+
 
 **Query:Tell me the percentage of restaurants per city where the review indicates the restaurants' description being inconsistent**
 
@@ -1056,6 +1069,7 @@ ORDER BY
 ```
 ========================================================================================================= 
 
+
 **Query: Tell me, for each continent and dish, the percentage of reviews indicating that the dish is cheap**
 
 
@@ -1112,7 +1126,11 @@ ORDER BY
     percentage_cheap_reviews DESC, 
     d.dish_name;
 ```
-========================================================================================================= 
+
+
+
+
+
 
 ========================================================================================================= 
 
@@ -1295,6 +1313,7 @@ WHERE
 
 ========================================================================================================= 
 
+
 **Query:Where can I get great food with a busy, energetic vibe without needing a reservation 3 months in advance?**
 
 
@@ -1379,6 +1398,7 @@ LIMIT 1;
 ```
 
 ========================================================================================================= 
+
 
 **Query:Give me a summary of the reviews for cheap restaurants with included service fees that are actually good**
 
