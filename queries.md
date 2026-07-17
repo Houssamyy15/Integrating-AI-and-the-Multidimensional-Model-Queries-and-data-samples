@@ -1468,7 +1468,7 @@ WHERE
 ```
 ========================================================================================================= 
 
-**Query:Find not-so-expensive dishes **
+**Query:Find not-so-expensive dishes**
 
 
 ``` 
