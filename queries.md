@@ -525,43 +525,6 @@ JOIN
 ```
 
 
-========================================================================================================= 
-
-
-
-
-**Query:What is the revenue in seaside or countryside locations?**
-
-
-``` 
-WITH target_locations AS (
-    SELECT 
-        restaurant_id
-    FROM 
-        location
-    WHERE 
-        -- Text Embedding Similarity for seaside locations
-        ai.ollama_embed(
-            'mxbai-embed-large',
-            'seaside',
-            host => 'http://pgai-ollama:11434'
-        )::vector <=> restaurant_description_embedded < 0.4
-        OR
-        -- Text Embedding Similarity for countryside locations
-        ai.ollama_embed(
-            'mxbai-embed-large',
-            'countryside',
-            host => 'http://pgai-ollama:11434'
-        )::vector <=> restaurant_description_embedded < 0.4
-)
-SELECT 
-    SUM(o.amount) AS total_revenue
-FROM 
-    order_Line o
-JOIN 
-    target_locations tl ON o.restaurant_id = tl.restaurant_id;
-```
-
 
 ========================================================================================================= 
 
@@ -1117,9 +1080,296 @@ ORDER BY
     romance_similarity_distance ASC;
 ```
 
+========================================================================================================= 
+
+**Query:For each continent, show me the average price of burgers on a monthly basis**
 
 
+``` 
+WITH continent_lookup AS (
+    SELECT DISTINCT
+        l.country,
+        -- Virtual Level: continent (Enriched via LLM and explicitly cast to text)
+        (ai.openai_chat_complete(
+            'llama-3.1-8b-instant',
+            jsonb_build_array(
+                jsonb_build_object(
+                    'role', 'user', 
+                    'content', 'Identify the continent where the country ''' || l.country || ''' is located. Reply ONLY with the name of the continent as plain text.'
+                )
+            )
+        )->'choices'->0->'message'->>'content')::text AS continent
+    FROM 
+        location l
+)
+SELECT 
+    cl.continent,
+    t.year,
+    t.month,
+    -- Aggregation: Average price of burgers
+    AVG(ol.unit_price) AS average_burger_price
+FROM 
+    order_Line ol
+JOIN 
+    dish d ON ol.dish_id = d.dish_id
+JOIN 
+    time t ON ol.date_id = t.date_id
+JOIN 
+    location l ON ol.restaurant_id = l.restaurant_id
+JOIN 
+    continent_lookup cl ON l.country = cl.country
+WHERE 
+    -- Filter: Strictly target burger dishes
+    d.dish_name ILIKE '%burger%'
+GROUP BY 
+    cl.continent,
+    t.year,
+    t.month
+ORDER BY 
+    cl.continent,
+    t.year,
+    t.month;
+```
 
+========================================================================================================= 
+
+**Query:Group orders by customer satisfaction and tell me the average price and number of orders**
+
+
+``` 
+WITH review_satisfaction_mapping AS (
+    SELECT 
+        ol.order_id,
+        ol.unit_price,
+        ol.review,
+        -- Virtual Level: customer_satisfaction (Enriched via LLM and explicitly cast to text)
+        (ai.openai_chat_complete(
+            'llama-3.1-8b-instant',
+            jsonb_build_array(
+                jsonb_build_object(
+                    'role', 'user', 
+                    'content', 'Analyze this restaurant customer review and classify the satisfaction level into one of these exact categories: ''High'', ''Medium'', or ''Low''. Reply only with the category name. Review: ' || ol.review
+                )
+            )
+        )->'choices'->0->'message'->>'content')::text AS customer_satisfaction
+    FROM 
+        order_Line ol
+    WHERE 
+        ol.review IS NOT NULL 
+        AND ol.review <> ''
+)
+SELECT 
+    rsm.customer_satisfaction,
+    -- Aggregation: Average price per satisfaction tier
+    AVG(rsm.unit_price) AS average_price,
+    -- Aggregation: Total distinct number of orders per tier
+    COUNT(DISTINCT rsm.order_id) AS number_of_orders
+FROM 
+    review_satisfaction_mapping rsm
+GROUP BY 
+    rsm.customer_satisfaction
+ORDER BY 
+    CASE rsm.customer_satisfaction
+        WHEN 'High' THEN 1
+        WHEN 'Medium' THEN 2
+        WHEN 'Low' THEN 3
+        ELSE 4
+    END;
+```
+========================================================================================================= 
+
+**Query:Count, for every city and dish, the percentage of orders where the picture of the dish is close to the standard picture**
+
+
+``` 
+SELECT 
+    l.city,
+    d.dish_name,
+    -- Aggregation: Total number of order lines for context
+    COUNT(ol.order_id) AS total_order_lines,
+    -- Aggregation: Percentage calculation using a conditional CASE statement
+    ROUND(
+        (COUNT(CASE WHEN (ol.dish_picture_embedded <=> d.dish_picture_embedded) < 0.4 THEN 1 END) * 100.0) 
+        / COUNT(ol.order_id), 
+        2
+    ) AS percentage_close_to_standard
+FROM 
+    order_Line ol
+JOIN 
+    location l ON ol.restaurant_id = l.restaurant_id
+JOIN 
+    dish d ON ol.dish_id = d.dish_id
+WHERE 
+    ol.dish_picture_embedded IS NOT NULL 
+    AND d.dish_picture_embedded IS NOT NULL
+GROUP BY 
+    l.city, 
+    d.dish_name
+ORDER BY 
+    l.city, 
+    percentage_close_to_standard DESC;
+```
+========================================================================================================= 
+
+**Query:Tell me the percentage of restaurants per city where the review indicates the restaurants' description being inconsistent**
+
+
+``` 
+WITH review_consistency_check AS (
+    SELECT 
+        l.city,
+        l.restaurant_id,
+        -- Virtual Level: is_inconsistent (Value 1.0 = Yes, Value 0.0 = No)
+        CAST(
+            NULLIF(
+                REGEXP_REPLACE(
+                    (REGEXP_MATCH(
+                        (ai.openai_chat_complete(
+                            'llama-3.1-8b-instant',
+                            jsonb_build_array(
+                                jsonb_build_object(
+                                    'role', 'user', 
+                                    'content', 'Compare this restaurant description with a customer review. Does the review imply that the description is inaccurate, misleading, or inconsistent with reality? \nDescription: ' || l.restaurant_description || '\nReview: ' || ol.review || '\nReply ONLY with 1 for yes and 0 for no.'
+                                )
+                            )
+                        )->'choices'->0->'message'->>'content')::text, 
+                        '[0-9.]+'
+                    ))[1], 
+                    '[^0-9.]', 
+                    '', 
+                    'g'
+                ), 
+                ''
+            ) AS DOUBLE PRECISION
+        ) AS is_inconsistent
+    FROM 
+        location l
+    JOIN 
+        order_Line ol ON l.restaurant_id = ol.restaurant_id
+    WHERE 
+        ol.review IS NOT NULL 
+        AND ol.review <> ''
+        AND l.restaurant_description IS NOT NULL 
+        AND l.restaurant_description <> ''
+),
+restaurant_flags AS (
+    SELECT 
+        city,
+        restaurant_id,
+        -- If any review flags an inconsistency, mark the restaurant as inconsistent (1)
+        MAX(CASE WHEN is_inconsistent = 1.0 THEN 1 ELSE 0 END) AS restaurant_has_inconsistency
+    FROM 
+        review_consistency_check
+    GROUP BY 
+        city,
+        restaurant_id
+)
+SELECT 
+    city,
+    COUNT(restaurant_id) AS total_restaurants,
+    -- Aggregation: Percentage of distinct restaurants with an inconsistency flag
+    ROUND(
+        (SUM(restaurant_has_inconsistency) * 100.0) / COUNT(restaurant_id), 
+        2
+    ) AS percentage_inconsistent_restaurants
+FROM 
+    restaurant_flags
+GROUP BY 
+    city
+ORDER BY 
+    percentage_inconsistent_restaurants DESC, 
+    city;
+```
+========================================================================================================= 
+
+**Query: Tell me, for each continent and dish, the percentage of reviews indicating that the dish is cheap**
+
+
+``` 
+WITH continent_lookup AS (
+    SELECT DISTINCT
+        l.country,
+        -- Virtual Level: continent (Enriched via LLM and cast to text)
+        (ai.openai_chat_complete(
+            'llama-3.1-8b-instant',
+            jsonb_build_array(
+                jsonb_build_object(
+                    'role', 'user', 
+                    'content', 'Identify the continent where the country ''' || l.country || ''' is located. Reply ONLY with the name of the continent as plain text.'
+                )
+            )
+        )->'choices'->0->'message'->>'content')::text AS continent
+    FROM 
+        location l
+)
+SELECT 
+    cl.continent,
+    d.dish_name,
+    COUNT(ol.order_id) AS total_reviews,
+    -- Aggregation: Calculate percentage using vector distance threshold
+    ROUND(
+        (COUNT(
+            CASE 
+                WHEN (ol.review_embedded <=> ai.ollama_embed(
+                    'mxbai-embed-large', 
+                    'cheap', 
+                    host => 'http://pgai-ollama:11434'
+                )::vector) < 0.4 
+                THEN 1 
+            END
+        ) * 100.0) / COUNT(ol.order_id), 
+        2
+    ) AS percentage_cheap_reviews
+FROM 
+    order_Line ol
+JOIN 
+    dish d ON ol.dish_id = d.dish_id
+JOIN 
+    location l ON ol.restaurant_id = l.restaurant_id
+JOIN 
+    continent_lookup cl ON l.country = cl.country
+WHERE 
+    ol.review_embedded IS NOT NULL
+GROUP BY 
+    cl.continent, 
+    d.dish_name
+ORDER BY 
+    cl.continent, 
+    percentage_cheap_reviews DESC, 
+    d.dish_name;
+```
+========================================================================================================= 
+
+**Query:**
+
+
+``` 
+
+```
+========================================================================================================= 
+
+**Query:**
+
+
+``` 
+
+```
+========================================================================================================= 
+
+**Query:**
+
+
+``` 
+
+```
+========================================================================================================= 
+
+**Query:**
+
+
+``` 
+
+```
 ========================================================================================================= 
 
 <code style="color : cyan">UNCONVENTIONAL/FUZZY EXPRESSIONS</code>
