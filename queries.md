@@ -1002,70 +1002,56 @@ ORDER BY
 
 
 ``` 
-WITH review_consistency_check AS (
+WITH inconsistency_evaluation AS (
     SELECT 
         l.city,
         l.restaurant_id,
-        -- Virtual Level: is_inconsistent (Value 1.0 = Yes, Value 0.0 = No)
-        CAST(
-            NULLIF(
-                REGEXP_REPLACE(
-                    (REGEXP_MATCH(
-                        (ai.openai_chat_complete(
-                            'llama-3.1-8b-instant',
-                            jsonb_build_array(
-                                jsonb_build_object(
-                                    'role', 'user', 
-                                    'content', 'Compare this restaurant description with a customer review. Does the review imply that the description is inaccurate, misleading, or inconsistent with reality? \nDescription: ' || l.restaurant_description || '\nReview: ' || ol.review || '\nReply ONLY with 1 for yes and 0 for no.'
-                                )
-                            )
-                        )->'choices'->0->'message'->>'content')::text, 
-                        '[0-9.]+'
-                    ))[1], 
-                    '[^0-9.]', 
-                    '', 
-                    'g'
-                ), 
-                ''
-            ) AS DOUBLE PRECISION
-        ) AS is_inconsistent
-    FROM 
-        location l
-    JOIN 
-        order_Line ol ON l.restaurant_id = ol.restaurant_id
-    WHERE 
-        ol.review IS NOT NULL 
-        AND ol.review <> ''
-        AND l.restaurant_description IS NOT NULL 
-        AND l.restaurant_description <> ''
+        CASE 
+            WHEN LOWER(
+                COALESCE(
+                    (
+                        REGEXP_MATCH(
+                            (
+                                ai.openai_chat_complete('llama-3.1-8b-instant',
+                                    jsonb_build_array(
+                                        jsonb_build_object(
+                                            'role', 'user',
+                                            'content', 'Read the following restaurant description: "' || COALESCE(l.restaurant_description, '') || '". Does this description contain internal contradictions or inconsistent information? Answer with ONLY "TRUE" if inconsistent or "FALSE" if consistent.'
+                                        )
+                                    )
+                                )->'choices'->0->'message'->>'content'
+                            )::text,
+                            'TRUE|FALSE',
+                            'i'
+                        )
+                    )[1],
+                    'FALSE'
+                )
+            ) = 'true' THEN 1
+            ELSE 0
+        END AS is_inconsistent
+    FROM location l
+    WHERE l.restaurant_description IS NOT NULL
 ),
-restaurant_flags AS (
+restaurant_city_stats AS (
     SELECT 
         city,
         restaurant_id,
-        -- If any review flags an inconsistency, mark the restaurant as inconsistent (1)
-        MAX(CASE WHEN is_inconsistent = 1.0 THEN 1 ELSE 0 END) AS restaurant_has_inconsistency
-    FROM 
-        review_consistency_check
-    GROUP BY 
-        city,
-        restaurant_id
+        MAX(is_inconsistent) AS has_inconsistent_description
+    FROM inconsistency_evaluation
+    GROUP BY city, restaurant_id
 )
 SELECT 
     city,
-    COUNT(restaurant_id) AS total_restaurants,
-    -- Aggregation: Percentage of distinct restaurants with an inconsistency flag
+    COUNT(DISTINCT restaurant_id) AS total_restaurants,
+    COUNT(DISTINCT CASE WHEN has_inconsistent_description = 1 THEN restaurant_id END) AS inconsistent_restaurants,
     ROUND(
-        (SUM(restaurant_has_inconsistency) * 100.0) / COUNT(restaurant_id), 
+        (COUNT(DISTINCT CASE WHEN has_inconsistent_description = 1 THEN restaurant_id END)::numeric / 
+         NULLIF(COUNT(DISTINCT restaurant_id), 0)::numeric) * 100, 
         2
-    ) AS percentage_inconsistent_restaurants
-FROM 
-    restaurant_flags
-GROUP BY 
-    city
-ORDER BY 
-    percentage_inconsistent_restaurants DESC, 
-    city;
+    ) AS percentage_inconsistent
+FROM restaurant_city_stats
+GROUP BY city;
 ```
 ========================================================================================================= 
 
@@ -1347,54 +1333,27 @@ ORDER BY
 
 
 ``` 
-WITH review_scores AS (
-    SELECT 
-        ol.restaurant_id,
-        -- Virtual Level: service_score (1.0 = Worst Service, 5.0 = Excellent Service)
-        CAST(
-            NULLIF(
-                REGEXP_REPLACE(
-                    (REGEXP_MATCH(
-                        (ai.openai_chat_complete(
-                            'llama-3.1-8b-instant',
-                            jsonb_build_array(
-                                jsonb_build_object(
-                                    'role', 'user', 
-                                    'content', 'Based on the customer review, rate the quality of the restaurant''s service on a scale from 1 to 5 (where 1 is extremely bad/worst service, 5 is excellent service, and 3 is neutral). If the review does not mention service, reply with 3. Reply ONLY with the number. Review: ' || ol.review
-                                )
-                            )
-                        )->'choices'->0->'message'->>'content')::text, 
-                        '[0-9.]+'
-                    ))[1], 
-                    '[^0-9.]', 
-                    '', 
-                    'g'
-                ), 
-                ''
-            ) AS DOUBLE PRECISION
-        ) AS service_score
-    FROM 
-        order_Line ol
-    WHERE 
-        ol.review IS NOT NULL 
-        AND ol.review <> ''
-)
 SELECT 
-    l.restaurant_id,
-    l.city,
-    l.country,
-    AVG(rs.service_score) AS average_service_rating
+    restaurant_id,
+    restaurant_description,
+    city,
+    -- Calculate the cosine distance (smaller distance = closer match to awful service descriptors)
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'terrible service rude waitstaff extremely slow hostile waiters bad reviews',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) AS service_dissimilarity_distance
 FROM 
-    review_scores rs
-JOIN 
-    location l ON rs.restaurant_id = l.restaurant_id
-GROUP BY 
-    l.restaurant_id, 
-    l.city, 
-    l.country
+    location
+WHERE 
+    -- Filter for locations matching these negative service traits
+    (ai.ollama_embed(
+        'mxbai-embed-large',
+        'terrible service rude waitstaff extremely slow hostile waiters bad reviews',
+        host => 'http://pgai-ollama:11434'
+    )::vector <=> restaurant_description_embedded) < 0.4
 ORDER BY 
-    average_service_rating ASC
-LIMIT 1;
+    service_dissimilarity_distance ASC;
 ```
 
 ========================================================================================================= 
